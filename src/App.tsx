@@ -99,7 +99,11 @@ export default function App() {
     } else {
       root.classList.remove('dark');
     }
-    localStorage.setItem('study_theme', theme);
+    try {
+      localStorage.setItem('study_theme', theme);
+    } catch {
+      /* storage unavailable */
+    }
   }, [theme]);
 
   // Load active material details

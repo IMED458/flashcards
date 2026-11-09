@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ka">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>გადამისამართება…</title>
+    <script>
+      // GitHub Pages project site: https://<user>.github.io/<repo>/...
+      // Any unknown URL goes back to the app root instead of showing a 404.
+      (function () {
+        var host = location.hostname;
+        var seg = location.pathname.split('/').filter(Boolean);
+        var base = host.endsWith('github.io') && !host.startsWith(seg[0] + '.') && seg.length ? '/' + seg[0] + '/' : '/';
+        location.replace(base);
+      })();
+    </script>
+  </head>
+  <body style="font-family:system-ui,sans-serif;text-align:center;padding:48px">
+    <p>გადამისამართება… <a href="./">მთავარ გვერდზე დაბრუნება</a></p>
+  </body>
+</html>

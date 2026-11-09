@@ -35,9 +35,17 @@ const DEFAULT_TIMER: FocusTimerState = {
 
 export function getInitialTheme(): 'light' | 'dark' {
   if (typeof window !== 'undefined') {
-    const saved = localStorage.getItem('study_theme');
-    if (saved === 'dark' || saved === 'light') return saved;
-    if (window.matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
+    try {
+      const saved = window.localStorage.getItem('study_theme');
+      if (saved === 'dark' || saved === 'light') return saved;
+    } catch {
+      /* storage unavailable (private mode) */
+    }
+    try {
+      if (window.matchMedia?.('(prefers-color-scheme: dark)').matches) return 'dark';
+    } catch {
+      /* ignore */
+    }
   }
   return 'light';
 }
