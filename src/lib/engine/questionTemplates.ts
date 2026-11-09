@@ -5,12 +5,14 @@
 import { Fact, Flashcard, QuizQuestion, FillBlank, Term } from './types';
 import { generateDistractors, createSeededRandom } from './distractors';
 import { generateAcceptedAnswers } from './acceptedAnswers';
+import { isMostlyLatin } from './en/facts';
 
 export function createFlashcardFromFact(fact: Fact): Flashcard | null {
   let front = '';
   let back = '';
 
-  switch (fact.type) {
+  const english = isMostlyLatin(fact.sentence);
+  switch (english && fact.type !== 'definition' && fact.type !== 'enumeration' ? 'cloze' : fact.type) {
     case 'definition':
       front = `რა არის ${fact.subject}?`;
       back = fact.object;
@@ -80,7 +82,8 @@ export function createQuizQuestionFromFact(
   const rng = createSeededRandom(seed);
   let question = '';
 
-  switch (fact.type) {
+  const english = isMostlyLatin(fact.sentence);
+  switch (english && fact.type !== 'definition' ? 'cloze' : fact.type) {
     case 'definition':
       // Rotate between "რა არის X?" and "რომელ ცნებას შეესაბამება: Y?"
       if (fact.subject.length <= 25 && rng() > 0.4) {

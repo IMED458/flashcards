@@ -37,7 +37,7 @@ export function cleanExtractedText(text: string): string {
 }
 
 /** Share of characters that are letters/digits/common punctuation — detects binary garbage. */
-function readableRatio(text: string): number {
+export function readableRatio(text: string): number {
   if (!text) return 0;
   const sample = text.slice(0, 20_000);
   const readable = sample.match(/[\p{L}\p{N}\s.,;:!?()„“"'\-–—%/]/gu)?.length ?? 0;

@@ -8,7 +8,7 @@ import { AppView, StudyTab, FocusTimerState, getInitialTheme } from './lib/store
 import {
   db,
   initializeDatabase,
-  repairGeneratedIds,
+  repairMaterials,
   MaterialRecord,
   FolderRecord,
   NotesRecord,
@@ -26,6 +26,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { ProcessingView, ProcessingState } from './components/ProcessingView';
 import type { ProcessingJob } from './components/Dashboard';
 import { ShortcutsModal } from './components/ShortcutsModal';
+import { BrokenMaterialNotice, isBrokenMaterial } from './components/BrokenMaterialNotice';
 
 import { NotesModule } from './components/modules/NotesModule';
 import { QuizModule } from './components/modules/QuizModule';
@@ -46,6 +47,8 @@ export default function App() {
   const [folders, setFolders] = useState<FolderRecord[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
+  // Bumped on every data reload so the open material's modules are re-read from the DB.
+  const [dataVersion, setDataVersion] = useState(0);
 
   // Active study material
   const [activeMaterialId, setActiveMaterialId] = useState<string | null>(null);
@@ -78,12 +81,12 @@ export default function App() {
   const loadData = async () => {
     try {
       await initializeDatabase();
-      await repairGeneratedIds().catch(err => console.warn('ID repair failed', err));
       const mats = await db.materials.toArray();
       const flds = await db.folders.toArray();
       setMaterials(mats);
       setFolders(flds);
       setIsLoading(false);
+      setDataVersion(v => v + 1);
     } catch (err) {
       console.error('Failed to initialize database', err);
       setIsLoading(false);
@@ -91,7 +94,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadData();
+    loadData().then(() =>
+      // Fix data saved by older versions in the background, then refresh.
+      repairMaterials()
+        .then(changed => {
+          if (changed) loadData();
+        })
+        .catch(err => console.warn('Material repair failed', err))
+    );
   }, []);
 
   // Theme synchronization with documentElement
@@ -113,12 +123,15 @@ export default function App() {
   useEffect(() => {
     if (!activeMaterialId) return;
 
+    let cancelled = false;
     const fetchMaterialDetails = async () => {
       const mat = await db.materials.get(activeMaterialId);
+      if (cancelled) return;
       if (mat) {
         setCurrentMaterial(mat);
         const nRec = await db.notes.get(activeMaterialId);
-        if (nRec) setNotesData(nRec.auto);
+        if (cancelled) return;
+        setNotesData(nRec ? nRec.auto : null);
 
         const cards = await db.flashcards.where('materialId').equals(activeMaterialId).toArray();
         setCardsData(cards);
@@ -130,12 +143,16 @@ export default function App() {
         setFillData(fills);
 
         const mRec = await db.mindmaps.get(activeMaterialId);
-        if (mRec) setMindmapData(mRec.auto);
+        if (cancelled) return;
+        setMindmapData(mRec ? mRec.auto : null);
       }
     };
 
-    fetchMaterialDetails();
-  }, [activeMaterialId]);
+    fetchMaterialDetails().catch(err => console.error('Failed to load material', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMaterialId, dataVersion]);
 
   // Global keyboard shortcuts (1-6 for modules, [ for sidebar, ? for help)
   useEffect(() => {
@@ -167,6 +184,14 @@ export default function App() {
 
   // Select material to study
   const handleSelectMaterial = (id: string, initialTab: StudyTab = 'summary') => {
+    if (id !== activeMaterialId) {
+      setCurrentMaterial(null);
+      setNotesData(null);
+      setCardsData([]);
+      setQuizData([]);
+      setFillData([]);
+      setMindmapData(null);
+    }
     setActiveMaterialId(id);
     setActiveStudyTab(initialTab);
     setCurrentView('study');
@@ -287,9 +312,24 @@ export default function App() {
               setTheme={setTheme}
               onRefreshAll={loadData}
             />
+          ) : currentView === 'study' && currentMaterial && isBrokenMaterial(currentMaterial, notesData) ? (
+            <BrokenMaterialNotice
+              material={currentMaterial}
+              onBack={() => setCurrentView('dashboard')}
+              onDeleted={() => {
+                setActiveMaterialId(null);
+                setCurrentMaterial(null);
+                setCurrentView('dashboard');
+                loadData();
+              }}
+            />
           ) : currentView === 'study' && currentMaterial ? (
             /* STUDY MODULES VIEW */
             <div>
+              {activeStudyTab === 'summary' && !notesData && (
+                <div className="p-12 text-center text-slate-400">იტვირთება...</div>
+              )}
+
               {activeStudyTab === 'summary' && notesData && (
                 <NotesModule
                   materialId={currentMaterial.id}

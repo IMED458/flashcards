@@ -49,6 +49,17 @@ export function processTextToStudyModules(
 
   // 1. Structure Analysis & Tree Building
   const tree: DocNode = parseDocumentStructure(rawText);
+  // Keep the number of sections renderable: merge everything past the limit into the last section.
+  const MAX_SECTIONS = 80;
+  if (tree.sections.length > MAX_SECTIONS) {
+    const keep = tree.sections.slice(0, MAX_SECTIONS);
+    const rest = tree.sections.slice(MAX_SECTIONS);
+    keep[MAX_SECTIONS - 1] = {
+      ...keep[MAX_SECTIONS - 1],
+      blocks: [...keep[MAX_SECTIONS - 1].blocks, ...rest.flatMap(s => s.blocks)]
+    };
+    tree.sections = keep;
+  }
 
   // 2. Key Term Extraction (TF-IDF + RAKE)
   const terms: Term[] = extractKeyTerms(tree);

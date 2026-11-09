@@ -39,8 +39,19 @@ export const GEORGIAN_STOPWORDS = new Set([
   'მოცემული', 'ზემოაღნიშნული', 'ქვემოაღნიშნული', 'იგივე', 'ერთგვარი', 'თავისთავად'
 ]);
 
+const ENGLISH_STOPWORDS = new Set([
+  'a','an','the','and','or','but','if','then','else','of','to','in','on','at','by','for','with','from','into','onto','about','as',
+  'is','are','was','were','be','been','being','am','do','does','did','done','have','has','had','having','can','could','will','would',
+  'shall','should','may','might','must','not','no','yes','this','that','these','those','it','its','they','them','their','there','here',
+  'he','she','him','her','his','we','us','our','you','your','i','me','my','who','whom','whose','which','what','when','where','why','how',
+  'all','any','each','every','both','either','neither','some','such','other','another','more','most','less','least','many','much','few',
+  'very','also','only','just','than','too','so','up','down','out','over','under','again','further','once','after','before','during',
+  'while','within','without','through','between','against','above','below','per','via','until','since','because','into','onto',
+  'click','go','use','used','using','enter','select','check','make','sure','please','try','one','two','three','new','first','see'
+]);
+
 export function isStopword(word: string): boolean {
   if (!word) return true;
   const clean = word.toLowerCase().trim().replace(/[.,!?:;„"“”()]/g, '');
-  return GEORGIAN_STOPWORDS.has(clean) || clean.length < 2;
+  return GEORGIAN_STOPWORDS.has(clean) || ENGLISH_STOPWORDS.has(clean) || clean.length < 2;
 }

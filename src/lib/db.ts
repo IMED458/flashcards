@@ -13,9 +13,11 @@ import {
   FillBlank,
   MindNode,
   EngineStats,
-  EngineOptions
+  EngineOptions,
+  EngineResult
 } from './engine/types';
 import { runEngine } from './engine/runEngine';
+import { extractTextFromFile, readableRatio } from './extractText';
 import { SAMPLE_DOCUMENTS } from '../data/sampleDocuments';
 
 export interface MaterialRecord {
@@ -136,7 +138,7 @@ export const db = new StudyDatabase();
 export async function initializeDatabase(): Promise<void> {
   const count = await db.materials.count();
   if (count > 0) return;
-  await db.settings.put({ key: 'generatedIdsV2', value: true });
+  await db.settings.put({ key: REPAIR_FLAG, value: true });
 
   // Add default folders
   const folderHistory: FolderRecord = {
@@ -209,91 +211,85 @@ export async function saveProcessedMaterial(params: {
     updatedAt: now
   };
 
-  await db.transaction('rw', [
-    db.materials,
-    db.docTrees,
-    db.notes,
-    db.flashcards,
-    db.quizQuestions,
-    db.fillBlanks,
-    db.mindmaps
-  ], async () => {
-    // 1. Material Record
-    await db.materials.put(materialRecord);
-
-    // 2. DocTree Record
-    await db.docTrees.put({
-      materialId: params.id,
-      tree: engineResult.tree,
-      terms: engineResult.terms,
-      facts: engineResult.facts,
-      stats: engineResult.stats
-    });
-
-    // 3. Notes Record
-    await db.notes.put({
-      materialId: params.id,
-      auto: engineResult.notes,
-      readSections: []
-    });
-
-    // 4. Flashcards
-    // Remove previous auto cards for this material if updating
-    await db.flashcards.where('materialId').equals(params.id).delete();
-    // IDs from the engine (e.g. `card-fact-1`) repeat across documents: namespace them per material,
-    // otherwise a new upload overwrites the previous material's cards/quiz/fill-blanks.
-    const cardsWithMatId = engineResult.flashcards.map(c => ({ ...c, id: `${params.id}:${c.id}`, materialId: params.id }));
-    await db.flashcards.bulkPut(cardsWithMatId);
-
-    // 5. Quiz Questions
-    await db.quizQuestions.where('materialId').equals(params.id).delete();
-    const quizWithMatId = engineResult.quiz.map(q => ({ ...q, id: `${params.id}:${q.id}`, materialId: params.id }));
-    await db.quizQuestions.bulkPut(quizWithMatId);
-
-    // 6. Fill in the Blanks
-    await db.fillBlanks.where('materialId').equals(params.id).delete();
-    const fillWithMatId = engineResult.fillBlanks.map(f => ({ ...f, id: `${params.id}:${f.id}`, materialId: params.id }));
-    await db.fillBlanks.bulkPut(fillWithMatId);
-
-    // 7. Mind Map
-    await db.mindmaps.put({
-      materialId: params.id,
-      auto: engineResult.mindmap
-    });
-  });
+  await storeEngineResult(materialRecord, engineResult);
 }
 
-/**
- * One-time repair for data saved before IDs were namespaced per material:
- * generated cards/quiz/fill-blanks overwrote each other across materials.
- * Regenerates them from each material's saved text. Manually created cards are kept.
- */
-export async function repairGeneratedIds(): Promise<void> {
-  const FLAG = 'generatedIdsV2';
-  const done = await db.settings.get(FLAG);
-  if (done?.value) return;
+/** Write a material and all generated modules. Manually created flashcards are kept. */
+async function storeEngineResult(materialRecord: MaterialRecord, engineResult: EngineResult): Promise<void> {
+  const id = materialRecord.id;
+  // Engine IDs (e.g. `card-fact-1`) repeat across documents: namespace them per material,
+  // otherwise one upload overwrites another material's cards/quiz/fill-blanks.
+  const ns = <T extends { id: string }>(items: T[]) => items.map(x => ({ ...x, id: `${id}:${x.id}`, materialId: id }));
 
-  const isLegacyGenerated = (id: string) => !id.includes(':') && !id.startsWith('card-man');
-  const materials = await db.materials.toArray();
-
-  for (const mat of materials) {
-    if (!mat.rawText) continue;
-    try {
-      const r = await runEngine(mat.rawText, mat.options);
-      await db.transaction('rw', [db.flashcards, db.quizQuestions, db.fillBlanks], async () => {
-        await db.flashcards.bulkPut(r.flashcards.map(c => ({ ...c, id: `${mat.id}:${c.id}`, materialId: mat.id })));
-        await db.quizQuestions.bulkPut(r.quiz.map(q => ({ ...q, id: `${mat.id}:${q.id}`, materialId: mat.id })));
-        await db.fillBlanks.bulkPut(r.fillBlanks.map(f => ({ ...f, id: `${mat.id}:${f.id}`, materialId: mat.id })));
+  await db.transaction(
+    'rw',
+    [db.materials, db.docTrees, db.notes, db.flashcards, db.quizQuestions, db.fillBlanks, db.mindmaps],
+    async () => {
+      await db.materials.put(materialRecord);
+      await db.docTrees.put({
+        materialId: id,
+        tree: engineResult.tree,
+        terms: engineResult.terms,
+        facts: engineResult.facts,
+        stats: engineResult.stats
       });
+      await db.notes.put({ materialId: id, auto: engineResult.notes, readSections: [] });
+
+      await db.flashcards.where('materialId').equals(id).filter(c => c.origin !== 'manual' && !c.id.startsWith('card-man')).delete();
+      await db.flashcards.bulkPut(ns(engineResult.flashcards));
+      await db.quizQuestions.where('materialId').equals(id).delete();
+      await db.quizQuestions.bulkPut(ns(engineResult.quiz));
+      await db.fillBlanks.where('materialId').equals(id).delete();
+      await db.fillBlanks.bulkPut(ns(engineResult.fillBlanks));
+
+      await db.mindmaps.put({ materialId: id, auto: engineResult.mindmap });
+    }
+  );
+}
+
+const REPAIR_FLAG = 'materialsV3';
+
+/**
+ * One-time background repair of materials saved by older versions:
+ *  - PDF/DOCX/PPTX used to be read as raw binary, producing garbage notes with thousands of
+ *    sections (opening them froze the page) and no quiz. If the original file was stored,
+ *    its text is re-extracted properly; otherwise the material is marked as needing re-upload.
+ *  - Generated IDs used to collide across materials (quizzes overwrote each other).
+ *  - English documents now get quiz/cards (new English rules).
+ * Returns true if anything was changed.
+ */
+export async function repairMaterials(): Promise<boolean> {
+  const done = await db.settings.get(REPAIR_FLAG);
+  if (done?.value) return false;
+
+  const materials = await db.materials.toArray();
+  for (const mat of materials) {
+    try {
+      let text = mat.rawText || '';
+      if (readableRatio(text) < 0.85) {
+        if (mat.blob && mat.fileName) {
+          const file = new File([mat.blob], mat.fileName, { type: mat.mimeType || '' });
+          text = (await extractTextFromFile(file)).text;
+        } else {
+          await db.materials.update(mat.id, { status: 'error' });
+          continue;
+        }
+      }
+      const result = await runEngine(text, mat.options);
+      await storeEngineResult({ ...mat, rawText: text, status: 'ready', engineVersion: 2, updatedAt: new Date().toISOString() }, result);
     } catch (err) {
       console.warn('Repair failed for material', mat.id, err);
+      await db.materials.update(mat.id, { status: 'error' }).catch(() => {});
     }
   }
 
+  // Remove leftover rows with legacy (colliding) IDs.
+  const isLegacy = (rowId: string) => !rowId.includes(':') && !rowId.startsWith('card-man');
   await db.transaction('rw', [db.flashcards, db.quizQuestions, db.fillBlanks, db.settings], async () => {
-    await db.flashcards.filter(c => isLegacyGenerated(c.id)).delete();
-    await db.quizQuestions.filter(q => isLegacyGenerated(q.id)).delete();
-    await db.fillBlanks.filter(f => isLegacyGenerated(f.id)).delete();
-    await db.settings.put({ key: FLAG, value: true });
+    await db.flashcards.filter(c => isLegacy(c.id)).delete();
+    await db.quizQuestions.filter(q => isLegacy(q.id)).delete();
+    await db.fillBlanks.filter(f => isLegacy(f.id)).delete();
+    await db.settings.put({ key: REPAIR_FLAG, value: true });
   });
+  return true;
 }

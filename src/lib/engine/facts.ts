@@ -4,6 +4,7 @@
  */
 import { DocNode, Fact, FactType } from './types';
 import { splitGeorgianSentences } from './ka/sentenceSplitter';
+import { extractEnglishFact, isMostlyLatin } from './en/facts';
 
 const ACTION_VERBS = [
   'შეადგინა', 'თარგმნა', 'შექმნა', 'აღმოაჩინა', 'მოიწვია', 'დააარსა',
@@ -33,6 +34,22 @@ export function extractFactsFromDocument(doc: DocNode): Fact[] {
         // Check if sentence starts with dangling pronouns
         const isDangling = DANGLING_STARTERS.some(pat => pat.test(sentence));
         if (isDangling) continue;
+
+        // English (Latin-script) sentences use their own rule set.
+        if (isMostlyLatin(sentence)) {
+          const en = extractEnglishFact(sentence, sec.title);
+          if (en) {
+            facts.push({
+              id: `fact-${factIdCounter++}`,
+              ...en,
+              sentence,
+              sectionId: sec.id,
+              sectionTitle: sec.title,
+              sourceRef: { page: blk.page || sec.page || 1, sectionTitle: sec.title }
+            });
+          }
+          continue;
+        }
 
         // Try extracting specific fact types in order of specificity
 

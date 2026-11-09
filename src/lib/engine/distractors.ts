@@ -135,11 +135,27 @@ export function generateDistractors(
     }
   }
 
+  // Distractors must be in the same script (Latin vs Georgian) as the correct answer.
+  const isLatin = (t: string) => /[A-Za-z]/.test(t) && !/[ა-ჰ]/.test(t);
+  const sameScript = (t: string) => isLatin(t) === isLatin(correct);
+
+  // 4b. SAME-KIND ANSWERS: other facts of the same type with comparable length
+  if (distractors.length < 3 && (fact.type === 'key_sentence' || fact.type === 'enumeration')) {
+    for (const otherFact of allFacts) {
+      if (otherFact.id === fact.id || otherFact.type !== fact.type) continue;
+      const cand = otherFact.answerSpan;
+      if (sameScript(cand) && isDistinct(cand) && Math.abs(cand.length - correct.length) < Math.max(20, correct.length * 0.8)) {
+        distractors.push(cand);
+        if (distractors.length >= 3) break;
+      }
+    }
+  }
+
   // 5. KEY TERM / CONCEPT FALLBACK
   if (distractors.length < 3) {
     // Use other high-scoring terms of similar length
     for (const t of allTerms) {
-      if (isDistinct(t.text)) {
+      if (sameScript(t.text) && isDistinct(t.text)) {
         distractors.push(t.text);
         if (distractors.length >= 3) break;
       }
