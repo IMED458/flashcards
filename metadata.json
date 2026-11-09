@@ -1,0 +1,8 @@
+{
+  "name": "სწავლა - ლოკალური სასწავლო პლატფორმა",
+  "description": "სასწავლო მასალების ავტომატური დამუშავება: ჩანაწერები, ქვიზი, ცოდნის რუკა, ბარათები და წერითი ტესტი AI-ს გარეშე.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
