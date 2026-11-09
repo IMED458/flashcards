@@ -8,6 +8,7 @@ import { AppView, StudyTab, FocusTimerState, getInitialTheme } from './lib/store
 import {
   db,
   initializeDatabase,
+  repairGeneratedIds,
   MaterialRecord,
   FolderRecord,
   NotesRecord,
@@ -22,7 +23,8 @@ import { Dashboard } from './components/Dashboard';
 import { LandingPage } from './components/LandingPage';
 import { FocusTimer } from './components/FocusTimer';
 import { SettingsPage } from './components/SettingsPage';
-import { ProcessingView } from './components/ProcessingView';
+import { ProcessingView, ProcessingState } from './components/ProcessingView';
+import type { ProcessingJob } from './components/Dashboard';
 import { ShortcutsModal } from './components/ShortcutsModal';
 
 import { NotesModule } from './components/modules/NotesModule';
@@ -55,7 +57,7 @@ export default function App() {
   const [mindmapData, setMindmapData] = useState<MindNode | null>(null);
 
   // Processing state
-  const [processingTitle, setProcessingTitle] = useState<string | null>(null);
+  const [processing, setProcessing] = useState<ProcessingState | null>(null);
 
   // Focus timer state
   const [isFocusPopoverOpen, setIsFocusPopoverOpen] = useState(false);
@@ -76,6 +78,7 @@ export default function App() {
   const loadData = async () => {
     try {
       await initializeDatabase();
+      await repairGeneratedIds().catch(err => console.warn('ID repair failed', err));
       const mats = await db.materials.toArray();
       const flds = await db.folders.toArray();
       setMaterials(mats);
@@ -169,32 +172,39 @@ export default function App() {
     setCurrentView('study');
   };
 
-  // Start processing view
-  const handleStartProcessing = (title: string) => {
-    setProcessingTitle(title);
+  // Run a processing job (extract text -> engine -> save) and track its real progress.
+  const handleStartProcessing = (title: string, job: ProcessingJob) => {
+    setProcessing({ title, stage: 'extracting' });
+    const report = (stage: ProcessingState['stage'], message?: string) =>
+      setProcessing(prev => (prev && prev.title === title && prev.stage !== 'error' ? { ...prev, stage, message } : prev));
+
+    job(report)
+      .then(({ materialId, notice }) => {
+        setProcessing(prev => (prev ? { ...prev, stage: 'done', materialId, notice, message: undefined } : prev));
+        loadData();
+      })
+      .catch(err => {
+        console.error('Processing failed', err);
+        setProcessing(prev =>
+          prev
+            ? { ...prev, stage: 'error', error: err instanceof Error ? err.message : 'დამუშავება ვერ მოხერხდა.' }
+            : prev
+        );
+      });
   };
 
-  const handleFinishProcessing = () => {
-    setProcessingTitle(null);
+  const openProcessedMaterial = (tab: StudyTab) => {
+    const id = processing?.materialId;
+    setProcessing(null);
     loadData();
-    // Select the newest material
-    db.materials.toArray().then(mats => {
-      if (mats.length > 0) {
-        const sorted = mats.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        handleSelectMaterial(sorted[0].id, 'summary');
-      }
-    });
+    if (id) handleSelectMaterial(id, tab);
   };
 
-  const handleGoToReview = () => {
-    setProcessingTitle(null);
-    loadData();
-    db.materials.toArray().then(mats => {
-      if (mats.length > 0) {
-        const sorted = mats.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-        handleSelectMaterial(sorted[0].id, 'review');
-      }
-    });
+  const handleFinishProcessing = () => openProcessedMaterial('summary');
+  const handleGoToReview = () => openProcessedMaterial('review');
+  const handleProcessingBack = () => {
+    setProcessing(null);
+    setCurrentView('dashboard');
   };
 
   const timerText = `${String(focusTimer.minutes).padStart(2, '0')}:${String(focusTimer.seconds).padStart(2, '0')}`;
@@ -248,11 +258,12 @@ export default function App() {
 
         {/* Content View Routing */}
         <main className="flex-1 overflow-y-auto">
-          {processingTitle ? (
+          {processing ? (
             <ProcessingView
-              title={processingTitle}
+              state={processing}
               onFinish={handleFinishProcessing}
               onGoToReview={handleGoToReview}
+              onBack={handleProcessingBack}
             />
           ) : currentView === 'landing' ? (
             <LandingPage onStartLearning={() => setCurrentView('dashboard')} />

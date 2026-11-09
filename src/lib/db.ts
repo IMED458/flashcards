@@ -15,7 +15,7 @@ import {
   EngineStats,
   EngineOptions
 } from './engine/types';
-import { processTextToStudyModules } from './engine';
+import { runEngine } from './engine/runEngine';
 import { SAMPLE_DOCUMENTS } from '../data/sampleDocuments';
 
 export interface MaterialRecord {
@@ -136,6 +136,7 @@ export const db = new StudyDatabase();
 export async function initializeDatabase(): Promise<void> {
   const count = await db.materials.count();
   if (count > 0) return;
+  await db.settings.put({ key: 'generatedIdsV2', value: true });
 
   // Add default folders
   const folderHistory: FolderRecord = {
@@ -187,7 +188,7 @@ export async function saveProcessedMaterial(params: {
   const now = new Date().toISOString();
 
   // Run pure deterministic engine
-  const engineResult = processTextToStudyModules(params.rawText, params.options);
+  const engineResult = await runEngine(params.rawText, params.options);
 
   const materialRecord: MaterialRecord = {
     id: params.id,
@@ -239,17 +240,19 @@ export async function saveProcessedMaterial(params: {
     // 4. Flashcards
     // Remove previous auto cards for this material if updating
     await db.flashcards.where('materialId').equals(params.id).delete();
-    const cardsWithMatId = engineResult.flashcards.map(c => ({ ...c, materialId: params.id }));
+    // IDs from the engine (e.g. `card-fact-1`) repeat across documents: namespace them per material,
+    // otherwise a new upload overwrites the previous material's cards/quiz/fill-blanks.
+    const cardsWithMatId = engineResult.flashcards.map(c => ({ ...c, id: `${params.id}:${c.id}`, materialId: params.id }));
     await db.flashcards.bulkPut(cardsWithMatId);
 
     // 5. Quiz Questions
     await db.quizQuestions.where('materialId').equals(params.id).delete();
-    const quizWithMatId = engineResult.quiz.map(q => ({ ...q, materialId: params.id }));
+    const quizWithMatId = engineResult.quiz.map(q => ({ ...q, id: `${params.id}:${q.id}`, materialId: params.id }));
     await db.quizQuestions.bulkPut(quizWithMatId);
 
     // 6. Fill in the Blanks
     await db.fillBlanks.where('materialId').equals(params.id).delete();
-    const fillWithMatId = engineResult.fillBlanks.map(f => ({ ...f, materialId: params.id }));
+    const fillWithMatId = engineResult.fillBlanks.map(f => ({ ...f, id: `${params.id}:${f.id}`, materialId: params.id }));
     await db.fillBlanks.bulkPut(fillWithMatId);
 
     // 7. Mind Map
@@ -257,5 +260,40 @@ export async function saveProcessedMaterial(params: {
       materialId: params.id,
       auto: engineResult.mindmap
     });
+  });
+}
+
+/**
+ * One-time repair for data saved before IDs were namespaced per material:
+ * generated cards/quiz/fill-blanks overwrote each other across materials.
+ * Regenerates them from each material's saved text. Manually created cards are kept.
+ */
+export async function repairGeneratedIds(): Promise<void> {
+  const FLAG = 'generatedIdsV2';
+  const done = await db.settings.get(FLAG);
+  if (done?.value) return;
+
+  const isLegacyGenerated = (id: string) => !id.includes(':') && !id.startsWith('card-man');
+  const materials = await db.materials.toArray();
+
+  for (const mat of materials) {
+    if (!mat.rawText) continue;
+    try {
+      const r = await runEngine(mat.rawText, mat.options);
+      await db.transaction('rw', [db.flashcards, db.quizQuestions, db.fillBlanks], async () => {
+        await db.flashcards.bulkPut(r.flashcards.map(c => ({ ...c, id: `${mat.id}:${c.id}`, materialId: mat.id })));
+        await db.quizQuestions.bulkPut(r.quiz.map(q => ({ ...q, id: `${mat.id}:${q.id}`, materialId: mat.id })));
+        await db.fillBlanks.bulkPut(r.fillBlanks.map(f => ({ ...f, id: `${mat.id}:${f.id}`, materialId: mat.id })));
+      });
+    } catch (err) {
+      console.warn('Repair failed for material', mat.id, err);
+    }
+  }
+
+  await db.transaction('rw', [db.flashcards, db.quizQuestions, db.fillBlanks, db.settings], async () => {
+    await db.flashcards.filter(c => isLegacyGenerated(c.id)).delete();
+    await db.quizQuestions.filter(q => isLegacyGenerated(q.id)).delete();
+    await db.fillBlanks.filter(f => isLegacyGenerated(f.id)).delete();
+    await db.settings.put({ key: FLAG, value: true });
   });
 }

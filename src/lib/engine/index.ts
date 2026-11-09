@@ -55,7 +55,19 @@ export function processTextToStudyModules(
   const keyTermStems = new Set(terms.slice(0, 20).map(t => stemGeorgian(t.text)));
 
   // 3. Deterministic Fact Extraction
-  const allFacts: Fact[] = extractFactsFromDocument(tree);
+  // Cap facts so quiz/distractor generation stays fast on very long documents.
+  const MAX_FACTS = 600;
+  let allFacts: Fact[] = extractFactsFromDocument(tree);
+  if (allFacts.length > MAX_FACTS) {
+    const keep = new Set(
+      allFacts
+        .map((f, i) => ({ i, c: f.confidence }))
+        .sort((a, b) => b.c - a.c)
+        .slice(0, MAX_FACTS)
+        .map(x => x.i)
+    );
+    allFacts = allFacts.filter((_, i) => keep.has(i));
+  }
 
   // 4. Build Structured Notes Module (§8)
   const noteSections: NoteSection[] = tree.sections.map((sec, idx) => {

@@ -22,13 +22,19 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { EngineOptions } from '../lib/engine/types';
+import { extractTextFromFile, ACCEPTED_FILE_TYPES, MAX_TEXT_CHARS } from '../lib/extractText';
+import type { ProcessingStage } from './ProcessingView';
+
+export type ProcessingJob = (
+  report: (stage: ProcessingStage, message?: string) => void
+) => Promise<{ materialId: string; notice?: string }>;
 
 interface DashboardProps {
   materials: MaterialRecord[];
   folders: FolderRecord[];
   onSelectMaterial: (id: string, initialTab?: any) => void;
   onRefreshMaterials: () => void;
-  onStartProcessing: (title: string) => void;
+  onStartProcessing: (title: string, job: ProcessingJob) => void;
   selectedFolderId?: string;
   setSelectedFolderId: (id: string | undefined) => void;
 }
@@ -113,89 +119,97 @@ export const Dashboard: React.FC<DashboardProps> = ({
   };
 
   // Submit Text Material
-  const handleProcessText = async () => {
+  const handleProcessText = () => {
     if (!rawTextInput.trim() || rawTextInput.length < 50) return;
     const title = rawTextTitle.trim() || 'ახალი ჩანაწერი';
-    const id = 'mat-' + Date.now();
+    const text = rawTextInput.slice(0, MAX_TEXT_CHARS);
+    const opts = options;
+    const folderId = selectedFolderId;
     setActiveModal('none');
-    onStartProcessing(title);
-
-    await saveProcessedMaterial({
-      id,
-      title,
-      sourceType: 'text',
-      rawText: rawTextInput,
-      coverColor: '#2563EB',
-      folderId: selectedFolderId,
-      options
-    });
     setRawTextInput('');
     setRawTextTitle('');
-    onRefreshMaterials();
+
+    onStartProcessing(title, async report => {
+      const id = 'mat-' + Date.now();
+      report('analyzing');
+      await saveProcessedMaterial({ id, title, sourceType: 'text', rawText: text, coverColor: '#2563EB', folderId, options: opts });
+      report('saving');
+      return { materialId: id };
+    });
   };
 
   // Submit Video Material
-  const handleProcessVideo = async () => {
+  const handleProcessVideo = () => {
     if (!youtubeUrl.trim()) return;
     const title = videoTitle.trim() || 'ვიდეო ლექცია';
-    const id = 'mat-' + Date.now();
+    const url = youtubeUrl;
+    const transcript = videoTranscript.trim().slice(0, MAX_TEXT_CHARS);
+    const opts = options;
+    const folderId = selectedFolderId;
     setActiveModal('none');
-    onStartProcessing(title);
-
-    // If transcript was provided or simulate transcript parsing
-    const textContent = videoTranscript.trim() || `# ${title}\n\nვიდეოს ტრანსკრიპტი და ძირითადი თეზისები:\n\nამ ვიდეო მასალაში განხილულია მნიშვნელოვანი თეორიული საკითხები. განმარტებულია ძირითადი ცნებები და პრაქტიკული მაგალითები.`;
-
-    await saveProcessedMaterial({
-      id,
-      title,
-      sourceType: 'video',
-      rawText: textContent,
-      coverColor: '#DC2626',
-      youtubeUrl,
-      folderId: selectedFolderId,
-      options
-    });
     setYoutubeUrl('');
     setVideoTitle('');
     setVideoTranscript('');
-    onRefreshMaterials();
+
+    onStartProcessing(title, async report => {
+      if (transcript.length < 50) {
+        throw new Error('ვიდეოს დასამუშავებლად ჩასვით მისი ტრანსკრიპტი (მინიმუმ 50 სიმბოლო). YouTube-ის ტრანსკრიპტს ბრაუზერიდან ავტომატურად ვერ ვიღებთ.');
+      }
+      const id = 'mat-' + Date.now();
+      report('analyzing');
+      await saveProcessedMaterial({
+        id,
+        title,
+        sourceType: 'video',
+        rawText: transcript,
+        coverColor: '#DC2626',
+        youtubeUrl: url,
+        folderId,
+        options: opts
+      });
+      report('saving');
+      return { materialId: id };
+    });
   };
 
   // Submit File Material
-  const handleProcessFile = async () => {
+  const handleProcessFile = () => {
     if (!selectedFile) return;
-    const title = selectedFile.name.replace(/\.[^/.]+$/, '');
-    const id = 'mat-' + Date.now();
+    const file = selectedFile;
+    const title = file.name.replace(/\.[^/.]+$/, '');
+    const opts = options;
+    const folderId = selectedFolderId;
     setActiveModal('none');
-    onStartProcessing(title);
-
-    // Read file text
-    let textContent = '';
-    try {
-      textContent = await selectedFile.text();
-    } catch (err) {
-      textContent = `# ${title}\n\nფაილის შიგთავსი წარმატებით ჩაიტვირთა.`;
-    }
-
-    if (!textContent || textContent.length < 20) {
-      textContent = `# ${title}\n\nდოკუმენტი შეიცავს საგანმანათლებლო მასალას.`;
-    }
-
-    await saveProcessedMaterial({
-      id,
-      title,
-      sourceType: 'file',
-      fileName: selectedFile.name,
-      mimeType: selectedFile.type,
-      size: selectedFile.size,
-      blob: selectedFile,
-      rawText: textContent,
-      coverColor: '#059669',
-      folderId: selectedFolderId,
-      options
-    });
     setSelectedFile(null);
-    onRefreshMaterials();
+    if (fileInputRef.current) fileInputRef.current.value = '';
+
+    onStartProcessing(title, async report => {
+      const id = 'mat-' + Date.now();
+      report('extracting', 'ფაილის წაკითხვა…');
+      const { text, truncated, usedOcr } = await extractTextFromFile(file, msg => report('extracting', msg));
+
+      report('analyzing');
+      await saveProcessedMaterial({
+        id,
+        title,
+        sourceType: 'file',
+        fileName: file.name,
+        mimeType: file.type,
+        size: file.size,
+        // Large files are not stored to avoid exceeding browser storage quota.
+        blob: file.size <= 15 * 1024 * 1024 ? file : undefined,
+        rawText: text,
+        coverColor: '#059669',
+        folderId,
+        options: opts
+      });
+      report('saving');
+
+      const notices: string[] = [];
+      if (truncated) notices.push('დოკუმენტი ძალიან დიდია — დამუშავდა მხოლოდ პირველი ნაწილი (~120 000 სიმბოლო).');
+      if (usedOcr) notices.push('ტექსტი ამოცნობილია სურათიდან (OCR) — შესაძლოა შეიცავდეს შეცდომებს.');
+      return { materialId: id, notice: notices.join(' ') || undefined };
+    });
   };
 
   // Create new folder
@@ -515,7 +529,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
-                accept=".pdf,.docx,.pptx,.txt,.md,.jpg,.jpeg,.png,.webp"
+                accept={ACCEPTED_FILE_TYPES}
                 onChange={(e) => {
                   if (e.target.files && e.target.files[0]) {
                     setSelectedFile(e.target.files[0]);

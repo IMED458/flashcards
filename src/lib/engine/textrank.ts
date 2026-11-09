@@ -35,11 +35,37 @@ function jaccardSimilarity(s1: Set<string>, s2: Set<string>): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+/** TextRank is O(n²) in memory and time; above this size we pre-select candidates. */
+const MAX_TEXTRANK_SENTENCES = 150;
+
 export function rankSentencesTextRank(
   sentences: string[],
   topCount = 10,
   keyTermStems: Set<string> = new Set()
 ): ScoredSentence[] {
+  if (sentences.length > MAX_TEXTRANK_SENTENCES) {
+    // Cheap O(n) pre-ranking by stem frequency, then TextRank on the best candidates only.
+    const stemSets = sentences.map(s => sentenceToStems(s));
+    const freq = new Map<string, number>();
+    stemSets.forEach(set => set.forEach(st => freq.set(st, (freq.get(st) || 0) + 1)));
+    const candidates = sentences
+      .map((text, index) => {
+        const words = text.split(/\s+/).length;
+        let score = 0;
+        stemSets[index].forEach(st => (score += Math.log(1 + (freq.get(st) || 0))));
+        score /= Math.sqrt(Math.max(1, stemSets[index].size));
+        if (words < 6 || words > 55) score *= 0.5;
+        return { index, score };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_TEXTRANK_SENTENCES)
+      .sort((a, b) => a.index - b.index);
+    const subset = candidates.map(c => sentences[c.index]);
+    return rankSentencesTextRank(subset, topCount, keyTermStems).map(r => ({
+      ...r,
+      index: candidates[r.index].index
+    }));
+  }
   if (sentences.length === 0) return [];
   if (sentences.length <= topCount) {
     return sentences.map((text, index) => ({ text, index, score: 1 }));
